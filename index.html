@@ -240,18 +240,39 @@
             camera.position.set(0, 1, 2.5);
             camera.lookAt(0, 1, 0);
             
-            // Renderer for user model
-            userModelRenderer = new THREE.WebGLRenderer({
-                canvas: modelCanvas,
-                antialias: true
-            });
-            userModelRenderer.setSize(modelCanvas.width, modelCanvas.height);
+            // Renderer for user model with error handling
+            try {
+                userModelRenderer = new THREE.WebGLRenderer({
+                    canvas: modelCanvas,
+                    antialias: true,
+                    alpha: true
+                });
+                userModelRenderer.setSize(modelCanvas.width, modelCanvas.height);
+            } catch (error) {
+                console.error("WebGL context creation failed:", error);
+                loadingStatus.textContent = "WebGL not supported in your browser or device. Please try another browser.";
+                // Create a fallback for the model container to show error
+                const errorMsg = document.createElement('div');
+                errorMsg.innerHTML = "WebGL not available";
+                errorMsg.style.color = "white";
+                errorMsg.style.textAlign = "center";
+                errorMsg.style.padding = "20px";
+                container.innerHTML = '';
+                container.appendChild(errorMsg);
+            }
         }
         
         // Load user's model from file
         function loadUserModel(file) {
             loadingStatus.textContent = "Loading your 3D model...";
             document.getElementById('loading').style.display = 'flex';
+            
+            // Check if WebGL is properly initialized
+            if (!userModelRenderer) {
+                loadingStatus.textContent = "Cannot load model: WebGL not available on your device.";
+                document.getElementById('loading').style.display = 'none';
+                return;
+            }
             
             const loader = new GLTFLoader(loadingManager);
             const fileURL = URL.createObjectURL(file);
@@ -484,7 +505,7 @@
             }
             
             // Rotate user model slowly for better analysis
-            if (userModel) {
+            if (userModel && userModelRenderer) {
                 userModel.rotation.y += 0.01;
                 userModelRenderer.render(userModelScene, camera);
             }
