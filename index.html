@@ -83,10 +83,8 @@
         import * as THREE from 'three';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        
-        // Load TensorFlow and PoseNet
-        // Note: These are loaded as script tags as they don't fully support ES modules
-        let poseNetLoaded = false;
+        import * as tf from '@tensorflow/tfjs';
+        import * as posenetModule from '@tensorflow-models/posenet';
         
         // Global variables
         let scene, camera, renderer, controls;
@@ -259,13 +257,14 @@
             }
         }
         
+        let poseNetLoaded = false;
+        
         // Load PoseNet model
         async function loadPoseNet() {
             loadingStatus.textContent = "Loading pose detection model...";
             
             try {
-                // Global scope is needed as posenet is loaded via script tag
-                poseNet = await posenet.load({
+                poseNet = await posenetModule.load({
                     architecture: 'MobileNetV1',
                     outputStride: 16,
                     inputResolution: { width: 320, height: 240 },
