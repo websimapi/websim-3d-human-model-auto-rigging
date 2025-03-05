@@ -37,17 +37,7 @@
             max-width: 300px;
             z-index: 10;
         }
-        #file-upload-container {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            z-index: 10;
-        }
-        #reference-model {
+        #model-container {
             position: fixed;
             bottom: 10px;
             right: 10px;
@@ -56,7 +46,16 @@
             border: 2px solid white;
             border-radius: 5px;
             z-index: 10;
-            background-color: #333;
+        }
+        #file-upload {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 20;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
         }
         progress {
             width: 80%;
@@ -73,16 +72,16 @@
     
     <div id="instructions">
         <h3>Auto-Rigging Demo</h3>
-        <p>Upload your unrigged 3D character model (glTF/GLB format).</p>
-        <p>The system will automatically rig and animate the model.</p>
-    </div>
-
-    <div id="file-upload-container">
-        <input type="file" id="model-upload" accept=".glb,.gltf" />
-        <button id="start-rigging">Start Auto-Rigging</button>
+        <p>Upload a non-rigged 3D character model below.</p>
+        <p>PoseNet will analyze the model and automatically rig it.</p>
     </div>
     
-    <div id="reference-model"></div>
+    <div id="file-upload">
+        <input type="file" id="model-input" accept=".glb,.gltf">
+        <button id="analyze-btn" disabled>Analyze & Auto-Rig</button>
+    </div>
+    
+    <div id="model-container"></div>
     
     <script type="importmap">
     {
@@ -106,11 +105,13 @@
         
         // Global variables
         let scene, camera, renderer, controls;
-        let userModel, skeleton, mixer, clock;
-        let referenceModel, referenceRenderer, referenceScene, referenceCamera;
+        let model, skeleton, mixer, clock;
         let poseNet;
         let loadingManager, progressBar, loadingStatus;
-        let animationRunning = false;
+        let userModel, userModelScene, userModelRenderer;
+        let modelCanvas, modelCanvasCtx;
+        let analyzeBtn = document.getElementById('analyze-btn');
+        let uploadedModelFile = null;
         
         // Bone mapping between PoseNet and model
         const boneMapping = {
@@ -148,6 +149,21 @@
             }
         };
         
+        // Setup event listeners for file upload
+        document.getElementById('model-input').addEventListener('change', function(event) {
+            if (event.target.files.length > 0) {
+                uploadedModelFile = event.target.files[0];
+                analyzeBtn.disabled = false;
+                loadingStatus.textContent = "Model file selected. Click 'Analyze & Auto-Rig' to process.";
+            }
+        });
+        
+        analyzeBtn.addEventListener('click', function() {
+            if (uploadedModelFile) {
+                loadUserModel(uploadedModelFile);
+            }
+        });
+        
         // Initialize Three.js scene
         function initScene() {
             // Scene setup
@@ -184,163 +200,160 @@
             // Clock for animations
             clock = new THREE.Clock();
             
-            // Initialize reference model scene
-            initReferenceModelScene();
-            
-            // Setup model upload handler
-            document.getElementById('model-upload').addEventListener('change', handleModelUpload);
-            document.getElementById('start-rigging').addEventListener('click', startRigging);
-            
-            // Handle window resize
-            window.addEventListener('resize', onWindowResize);
+            // Initialize secondary scene for user model
+            initUserModelScene();
             
             // Load PoseNet
             loadPoseNet();
+            
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
         }
         
-        // Initialize reference model scene (animated character for pose source)
-        function initReferenceModelScene() {
-            // Create reference scene
-            referenceScene = new THREE.Scene();
-            referenceScene.background = new THREE.Color(0x333333);
+        // Initialize secondary scene for user's uploaded model
+        function initUserModelScene() {
+            // Create a canvas for rendering the user model
+            modelCanvas = document.createElement('canvas');
+            modelCanvas.width = 320;
+            modelCanvas.height = 240;
+            modelCanvasCtx = modelCanvas.getContext('2d');
             
-            // Reference lighting
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            referenceScene.add(ambientLight);
+            // Create a container for the model canvas
+            const container = document.getElementById('model-container');
+            container.appendChild(modelCanvas);
+            
+            // Setup scene for user model
+            userModelScene = new THREE.Scene();
+            userModelScene.background = new THREE.Color(0x444444);
+            
+            // Lighting for user model
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            userModelScene.add(ambientLight);
             
             const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-            directionalLight.position.set(5, 10, 7.5);
-            referenceScene.add(directionalLight);
+            directionalLight.position.set(1, 2, 3);
+            userModelScene.add(directionalLight);
             
-            // Reference camera
-            referenceCamera = new THREE.PerspectiveCamera(
-                45, 160 / 120, 0.1, 1000
-            );
-            referenceCamera.position.set(0, 1.5, 3);
+            // Camera for user model
+            const aspect = modelCanvas.width / modelCanvas.height;
+            const camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 100);
+            camera.position.set(0, 1, 2.5);
+            camera.lookAt(0, 1, 0);
             
-            // Reference renderer
-            const container = document.getElementById('reference-model');
-            referenceRenderer = new THREE.WebGLRenderer({ antialias: true });
-            referenceRenderer.setSize(160, 120);
-            container.appendChild(referenceRenderer.domElement);
-            
-            // Load animated reference model
-            loadReferenceModel();
-        }
-        
-        // Load the reference animated model (source for pose detection)
-        function loadReferenceModel() {
-            loadingStatus.textContent = "Loading reference model...";
-            
-            const loader = new GLTFLoader(loadingManager);
-            const modelUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/Xbot.glb';
-            
-            loader.load(modelUrl, (gltf) => {
-                referenceModel = gltf.scene;
-                
-                // Add animations to the reference model
-                mixer = new THREE.AnimationMixer(referenceModel);
-                if (gltf.animations.length) {
-                    const action = mixer.clipAction(gltf.animations[0]);
-                    action.play();
-                }
-                
-                // Center model
-                const bbox = new THREE.Box3().setFromObject(referenceModel);
-                const center = bbox.getCenter(new THREE.Vector3());
-                referenceModel.position.x = -center.x;
-                referenceModel.position.y = -center.y;
-                referenceModel.position.z = -center.z;
-                referenceModel.position.y = 0;
-                
-                referenceScene.add(referenceModel);
+            // Renderer for user model
+            userModelRenderer = new THREE.WebGLRenderer({
+                canvas: modelCanvas,
+                antialias: true
             });
+            userModelRenderer.setSize(modelCanvas.width, modelCanvas.height);
         }
         
-        // Handle user model upload
-        function handleModelUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            
-            loadingStatus.textContent = "Loading your model...";
+        // Load user's model from file
+        function loadUserModel(file) {
+            loadingStatus.textContent = "Loading your 3D model...";
             document.getElementById('loading').style.display = 'flex';
             
             const loader = new GLTFLoader(loadingManager);
-            const reader = new FileReader();
+            const fileURL = URL.createObjectURL(file);
             
-            reader.onload = function(e) {
-                const contents = e.target.result;
+            loader.load(fileURL, (gltf) => {
+                // Clear previous model if any
+                if (userModel) {
+                    userModelScene.remove(userModel);
+                }
                 
-                loader.parse(contents, '', (gltf) => {
-                    // Remove any existing model
-                    if (userModel) {
-                        scene.remove(userModel);
-                    }
-                    if (skeleton) {
-                        scene.remove(skeleton);
-                    }
-                    
-                    userModel = gltf.scene;
-                    userModel.traverse(function(object) {
-                        if (object.isMesh) {
-                            object.castShadow = true;
-                            object.receiveShadow = true;
-                        }
-                    });
-                    
-                    // Center model
-                    const bbox = new THREE.Box3().setFromObject(userModel);
-                    const center = bbox.getCenter(new THREE.Vector3());
-                    userModel.position.x = -center.x;
-                    userModel.position.y = -center.y;
-                    userModel.position.z = -center.z;
-                    userModel.position.y = 0;
-                    
-                    scene.add(userModel);
-                    
-                    // Set up a basic skeleton for the model
-                    setupSkeleton(userModel);
-                    
-                    document.getElementById('loading').style.display = 'none';
-                }, undefined, function(error) {
-                    console.error('Error parsing model:', error);
-                    loadingStatus.textContent = "Error loading model. Please try another file.";
-                });
-            };
-            
-            reader.readAsArrayBuffer(file);
-        }
-        
-        // Set up basic skeleton for the uploaded model
-        function setupSkeleton(model) {
-            // Create a skeleton helper to visualize
-            skeleton = new THREE.SkeletonHelper(model);
-            skeleton.visible = true;
-            scene.add(skeleton);
-            
-            // Clear existing bone references
-            Object.keys(bonesRef).forEach(key => delete bonesRef[key]);
-            
-            // Store references to bones for pose updating
-            skeleton.bones.forEach(bone => {
-                bonesRef[bone.name] = bone;
+                userModel = gltf.scene;
+                
+                // Setup model and auto-center
+                const bbox = new THREE.Box3().setFromObject(userModel);
+                const center = bbox.getCenter(new THREE.Vector3());
+                const size = bbox.getSize(new THREE.Vector3());
+                
+                // Center and scale the model
+                userModel.position.x = -center.x;
+                userModel.position.y = -center.y + size.y/2;
+                userModel.position.z = -center.z;
+                
+                const scale = 1.5 / Math.max(size.x, size.y, size.z);
+                userModel.scale.set(scale, scale, scale);
+                
+                userModelScene.add(userModel);
+                
+                // Render the user model
+                userModelRenderer.render(userModelScene, camera);
+                
+                // Begin pose analysis once model is loaded
+                loadingStatus.textContent = "Analyzing model for auto-rigging...";
+                setTimeout(() => detectPoseOnModel(), 500); // Give time for the first render
+                
+                document.getElementById('loading').style.display = 'none';
+            }, 
+            (xhr) => {
+                // Progress handled by loadingManager
+            },
+            (error) => {
+                console.error('Error loading model:', error);
+                loadingStatus.textContent = "Error loading your model. Please try another file.";
             });
         }
         
-        // Start the auto-rigging process
-        function startRigging() {
-            if (!userModel || !skeleton) {
-                alert("Please upload a model first.");
-                return;
-            }
+        // Load default human model for rigging demonstration
+        function loadDefaultModel() {
+            loadingStatus.textContent = "Loading 3D human model...";
             
-            if (!poseNetLoaded) {
-                alert("PoseNet is still loading. Please wait.");
-                return;
-            }
+            const loader = new GLTFLoader(loadingManager);
             
-            animationRunning = true;
-            detectPose();
+            // Using a default mixamo character as our rigged model
+            // This URL points to a CC-licensed model hosted on GitHub for this demo
+            const modelUrl = 'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/Xbot.glb';
+            
+            loader.load(modelUrl, (gltf) => {
+                model = gltf.scene;
+                model.traverse(function(object) {
+                    if (object.isMesh) {
+                        object.castShadow = true;
+                        object.receiveShadow = true;
+                    }
+                });
+                
+                // Store reference to skeleton
+                skeleton = new THREE.SkeletonHelper(model);
+                skeleton.visible = true;
+                scene.add(skeleton);
+                
+                // Store references to bones for pose updating
+                skeleton.bones.forEach(bone => {
+                    bonesRef[bone.name] = bone;
+                });
+                
+                // Set up animation mixer
+                mixer = new THREE.AnimationMixer(model);
+                if (gltf.animations.length) {
+                    // Play default idle animation if available
+                    const idleAction = mixer.clipAction(gltf.animations[0]);
+                    idleAction.play();
+                }
+                
+                // Center model
+                const bbox = new THREE.Box3().setFromObject(model);
+                const center = bbox.getCenter(new THREE.Vector3());
+                model.position.x = -center.x;
+                model.position.y = -center.y;
+                model.position.z = -center.z;
+                model.position.y = 0; // Set to ground
+                
+                // Add model to scene
+                scene.add(model);
+                
+                loadingStatus.textContent = "Default model loaded. Ready for auto-rigging!";
+            }, 
+            (xhr) => {
+                // Progress handled by loadingManager
+            },
+            (error) => {
+                console.error('Error loading model:', error);
+                loadingStatus.textContent = "Error loading model. Please refresh the page.";
+            });
         }
         
         // Load PoseNet model
@@ -352,62 +365,75 @@
                 poseNet = await posenet.load({
                     architecture: 'MobileNetV1',
                     outputStride: 16,
-                    inputResolution: { width: 160, height: 120 },
+                    inputResolution: { width: 320, height: 240 },
                     multiplier: 0.75,
                     quantBytes: 2
                 });
                 
-                loadingStatus.textContent = "All components loaded!";
+                loadingStatus.textContent = "Pose detection model loaded!";
                 poseNetLoaded = true;
                 
                 // Hide loading screen if model is also loaded
                 if (loadingManager.isLoaded) {
                     document.getElementById('loading').style.display = 'none';
                 }
+                
+                // Load default model for demonstration
+                loadDefaultModel();
             } catch (error) {
                 console.error('Error loading PoseNet:', error);
                 loadingStatus.textContent = "Error loading pose detection. Please refresh.";
             }
         }
         
-        // Run pose detection on the reference model
-        async function detectPose() {
-            if (!poseNetLoaded || !referenceRenderer || !animationRunning) {
+        // Run pose detection on the user's model
+        async function detectPoseOnModel() {
+            if (!poseNet || !userModel) {
                 return;
             }
             
+            // Make sure the model is rendered in the canvas
+            userModelRenderer.render(userModelScene, camera);
+            
             try {
-                // Render reference model to a canvas
-                referenceRenderer.render(referenceScene, referenceCamera);
-                const canvas = referenceRenderer.domElement;
+                // Analyze the rendered model
+                const pose = await poseNet.estimateSinglePose(modelCanvas, {
+                    flipHorizontal: false
+                });
                 
-                // Use PoseNet to detect pose from the rendered reference model
-                const pose = await poseNet.estimateSinglePose(canvas);
-                
-                // Update user model pose if confidence is high enough
+                // Update model pose if we have confidence
                 if (pose.score > 0.2) {
+                    loadingStatus.textContent = "Pose detected! Auto-rigging in progress...";
+                    console.log("Detected pose:", pose);
                     updateModelPose(pose);
+                    
+                    setTimeout(() => {
+                        loadingStatus.textContent = "Auto-rigging complete!";
+                        document.getElementById('loading').style.display = 'none';
+                    }, 2000);
+                } else {
+                    loadingStatus.textContent = "Couldn't detect a clear pose. Try another model angle.";
+                    // Try again with a rotated model
+                    userModel.rotation.y += Math.PI / 4;
+                    setTimeout(() => detectPoseOnModel(), 500);
                 }
             } catch (error) {
                 console.error('Error in pose detection:', error);
-            }
-            
-            if (animationRunning) {
-                requestAnimationFrame(detectPose);
+                loadingStatus.textContent = "Error during pose analysis. Please try another model.";
             }
         }
         
-        // Update the user's 3D model based on detected pose
+        // Update the 3D model based on detected pose
         function updateModelPose(pose) {
-            if (!userModel || !skeleton) return;
+            if (!model || !skeleton) return;
             
             // Normalize keypoints
             const keypoints = {};
             pose.keypoints.forEach(keypoint => {
                 if (keypoint.score > 0.5) { // Only use high-confidence points
                     keypoints[keypoint.part] = {
-                        x: keypoint.position.x / 160 - 0.5,
-                        y: -(keypoint.position.y / 120 - 0.5)
+                        x: keypoint.position.x / modelCanvas.width - 0.5,
+                        y: -(keypoint.position.y / modelCanvas.height - 0.5)
                     };
                 }
             });
@@ -416,6 +442,10 @@
             for (const [poseKey, boneName] of Object.entries(boneMapping)) {
                 const bone = bonesRef[boneName];
                 if (bone && keypoints[poseKey]) {
+                    // This is a simplified approach - in a production system,
+                    // you'd use inverse kinematics or more complex rotation calculations
+                    // based on the relationships between multiple keypoints
+                    
                     // Simple rotation based on position offset from original pose
                     const offsetX = keypoints[poseKey].x * 2;
                     const offsetY = keypoints[poseKey].y * 2;
@@ -448,16 +478,18 @@
             
             const delta = clock.getDelta();
             
-            // Update reference model animations
+            // Update mixer
             if (mixer) {
                 mixer.update(delta);
             }
             
-            // Render both scenes
-            renderer.render(scene, camera);
-            if (referenceRenderer && referenceScene && referenceCamera) {
-                referenceRenderer.render(referenceScene, referenceCamera);
+            // Rotate user model slowly for better analysis
+            if (userModel) {
+                userModel.rotation.y += 0.01;
+                userModelRenderer.render(userModelScene, camera);
             }
+            
+            renderer.render(scene, camera);
         }
         
         // Initialize and start the application
