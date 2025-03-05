@@ -265,10 +265,10 @@
             try {
                 // First ensure TensorFlow.js is ready
                 await tf.ready();
-                // Then dynamically load PoseNet
-                const posenetModule = await import('@tensorflow-models/posenet');
                 
-                poseNet = await posenetModule.load({
+                // Then dynamically import and load PoseNet
+                const posenetModule = await import('@tensorflow-models/posenet');
+                poseNet = await posenetModule.default.load({
                     architecture: 'MobileNetV1',
                     outputStride: 16,
                     inputResolution: { width: 320, height: 240 },
@@ -288,7 +288,7 @@
                 detectPose();
             } catch (error) {
                 console.error('Error loading PoseNet:', error);
-                loadingStatus.textContent = "Error loading pose detection. Please refresh.";
+                loadingStatus.textContent = "Error loading pose detection. Please refresh and ensure you have a stable internet connection.";
             }
         }
         
